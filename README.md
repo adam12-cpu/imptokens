@@ -22,6 +22,8 @@ git diff HEAD~5 | imptokens --keep-ratio 0.5 --stats
 ## Table of contents
 
 - [Why imptokens](#why-imptokens)
+- [Demo video](#demo-video)
+- [Real workflow impact](#real-workflow-impact)
 - [Quick start](#quick-start)
 - [Installation](#installation)
 - [Usage](#usage)
@@ -31,6 +33,7 @@ git diff HEAD~5 | imptokens --keep-ratio 0.5 --stats
 - [Claude Code integration](#claude-code-integration)
 - [Model guide](#model-guide)
 - [Examples](#examples)
+- [Contributing](#contributing)
 - [Architecture](#architecture)
 - [Roadmap](#roadmap)
 - [License](#license)
@@ -42,6 +45,49 @@ git diff HEAD~5 | imptokens --keep-ratio 0.5 --stats
 - CLI-first design for shell pipelines and agent/tool hooks.
 - Multiple output formats (`text`, `token-ids`, `json`) and token-level debug view.
 - Includes practical Claude Code integration helpers (`compress-if-large`, `compress-paste`, hook mode).
+
+## Demo video
+
+<video src="video/out/Imptokens.mp4" controls muted playsinline width="100%"></video>
+Direct link: [`video/out/Imptokens.mp4`](video/out/Imptokens.mp4)
+
+## Real workflow impact
+
+These are practical “before -> after” examples that show what the project contributes in day-to-day work:
+
+### 1) Large git diff before review
+
+```bash
+git diff HEAD~8 | imptokens --keep-ratio 0.5 --stats
+# Keeps key symbols and changed lines while cutting context cost
+```
+
+### 2) Long error output before asking Claude
+
+```bash
+pytest -q 2>&1 | imptokens --keep-ratio 0.6 --stats
+# Preserves stack anchors and failure hints, trims repeated noise
+```
+
+### 3) Pre-compress clipboard for Claude prompts
+
+```bash
+compress-paste 0.5
+# Paste a denser prompt with lower token spend
+```
+
+### 4) Auto-compress tool output in hook flow
+
+```text
+rtk read bigfile.py | compress-if-large
+rtk git diff HEAD~5 | compress-if-large
+```
+
+### 5) Hook-mode compression for UserPromptSubmit events
+
+```bash
+echo '{"prompt":"...very long prompt..."}' | imptokens --hook-mode --hook-threshold 500
+```
 
 ## Quick start
 
@@ -263,6 +309,25 @@ imptokens --local-model /path/to/model.gguf "text"
 | `examples/03_quality_benchmark.py` | Compression quality benchmark |
 | `examples/04_demo.py` | Demo report generation |
 | `examples/05_qa_demo.py` | QA preservation demo |
+
+## Contributing
+
+Contributions are welcome. If this project saves you tokens, please star the repo and open an issue or PR.
+
+### Good first contributions
+
+- Add benchmark datasets and report scripts for real-world traces.
+- Improve Claude/RTK integration docs and setup robustness.
+- Add tests around compression strategy edge cases.
+- Add new backend experiments while keeping CLI compatibility.
+
+### Local dev loop
+
+```bash
+cargo build
+cargo run -- --help
+python3 examples/03_quality_benchmark.py
+```
 
 ## Architecture
 
