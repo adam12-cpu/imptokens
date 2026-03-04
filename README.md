@@ -1,70 +1,80 @@
-# imptokens
+<h1 align="center">imptokens</h1>
 
-**Semantic token compression for LLM context windows — fast, local, Metal-accelerated.**
+<p align="center">
+  <strong>Semantic token compression for LLM context windows</strong><br/>
+  Fast, local, Metal-accelerated (llama.cpp + Rust)
+</p>
 
-Runs a small language model locally to score every token by surprise (log-probability). Predictable tokens — articles, repeated phrases, boilerplate — are dropped. Informative ones are kept. The result is the same meaning in 30–70% fewer tokens.
+<p align="center">
+  <a href="https://github.com/nimhar/imptokens/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-16a34a"></a>
+  <a href="https://github.com/nimhar/imptokens"><img alt="Platform" src="https://img.shields.io/badge/platform-macOS%20Apple%20Silicon-111827"></a>
+  <a href="https://www.rust-lang.org/"><img alt="Rust" src="https://img.shields.io/badge/rust-1.70%2B-f97316"></a>
+  <a href="https://github.com/nimhar/imptokens/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/nimhar/imptokens?style=flat"></a>
+</p>
 
-```
+`imptokens` runs a small local model to score each token by surprise (log-probability), keeps the informative tokens, and drops predictable filler. In practice this cuts context size by 30-70% while preserving task-critical meaning.
+
+```bash
 git diff HEAD~5 | imptokens --keep-ratio 0.5 --stats
 # tokens: 312/624 kept  (50.0% reduction, 312 saved)
 ```
 
----
+## Table of contents
 
-## How it works
+- [Why imptokens](#why-imptokens)
+- [Quick start](#quick-start)
+- [Installation](#installation)
+- [Usage](#usage)
+- [CLI reference](#cli-reference)
+- [How it works](#how-it-works)
+- [Quality benchmark](#quality-benchmark)
+- [Claude Code integration](#claude-code-integration)
+- [Model guide](#model-guide)
+- [Examples](#examples)
+- [Architecture](#architecture)
+- [Roadmap](#roadmap)
+- [License](#license)
 
-Every token in your text gets a **log-probability** score: how likely was the model to predict this token given everything before it?
+## Why imptokens
 
-- **Low logprob** (e.g. `-8.5`) → token is *surprising* → carries information → **keep**
-- **High logprob** (e.g. `-0.1`) → token is *predictable* → adds little → **drop**
+- Built for AI-heavy developer workflows: diffs, logs, long docs, and generated outputs.
+- Fully local execution on Apple Silicon via `llama.cpp` + Metal.
+- CLI-first design for shell pipelines and agent/tool hooks.
+- Multiple output formats (`text`, `token-ids`, `json`) and token-level debug view.
+- Includes practical Claude Code integration helpers (`compress-if-large`, `compress-paste`, hook mode).
 
-```
-Input:   The model predicts the next token. The model predicts the next word.
-         ─── ───── ──────── ─── ──── ─────  ─── ───── ──────── ─── ──── ────
-logprob: BOS  -9.4   -5.1  -1.4 -6.2 -7.7  -1.5 -1.9   -1.8  -.22 -.28 -2.1
-kept?:    ✓    ✓      ✓     ✓    ✓    ✓      ✓    ✓      ✓     ✗    ✗    ✓
-
-Output:  The model predicts the next token. The model predicts word.
-```
-
-By the second sentence, the model already knows the pattern — so only the novel ending (`word` instead of `token`) is kept.
-
-**Backend:** [llama.cpp](https://github.com/ggerganov/llama.cpp) with Metal GPU acceleration on Apple Silicon. Default model: `Llama-3.2-1B-Instruct-Q4_K_M` (~700 MB, auto-downloaded on first use).
-
----
-
-## Installation
-
-### Prerequisites
-
-- macOS with Apple Silicon (M1/M2/M3/M4) — Metal GPU required for fast inference
-- [Rust](https://rustup.rs/) 1.70+
-
-```bash
-# Install Rust if needed
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-```
-
-### Build & install
+## Quick start
 
 ```bash
 git clone https://github.com/nimhar/imptokens.git
 cd imptokens
 bash install.sh
+
+# try it
+echo "Your long text goes here" | imptokens --keep-ratio 0.5 --stats
 ```
 
-`install.sh` builds the release binary, copies it to `~/.local/bin/`, and optionally sets up the Claude Code hook.
+`install.sh` builds the binary, installs it into `~/.local/bin`, and can optionally wire Claude Code hook helpers.
 
-### Manual build
+## Installation
+
+### Prerequisites
+
+- macOS on Apple Silicon (M1/M2/M3/M4)
+- Rust 1.70+
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+### Build manually
 
 ```bash
 cargo build --release
-# Binary at: ./target/release/imptokens
+./target/release/imptokens --help
 ```
 
-The model (~700 MB) downloads automatically from HuggingFace on first run and caches at `~/.cache/huggingface/hub/`.
-
----
+The default model is downloaded once and cached at `~/.cache/huggingface/hub/`.
 
 ## Usage
 
@@ -80,7 +90,7 @@ imptokens "Your long text here" --stats
 imptokens --file document.txt --keep-ratio 0.5
 ```
 
-### From stdin (pipe)
+### From stdin
 
 ```bash
 cat bigfile.py | imptokens --keep-ratio 0.6
@@ -88,222 +98,197 @@ git diff HEAD~5 | imptokens --stats
 curl -s https://example.com/api | imptokens --keep-ratio 0.5
 ```
 
----
+### Output formats
 
-## All flags
+```bash
+imptokens "text" --output-format text
+imptokens "text" --output-format token-ids
+imptokens "text" --output-format json
+imptokens "text" --debug
+```
+
+## CLI reference
 
 ### Input
 
 | Flag | Description |
-|------|-------------|
-| `[TEXT]` | Positional text argument |
+|---|---|
+| `[TEXT]` | Positional text input |
 | `-f, --file <PATH>` | Read from file (`-` for stdin) |
 
 ### Model
 
 | Flag | Default | Description |
-|------|---------|-------------|
+|---|---|---|
 | `-m, --model <REPO>` | `bartowski/Llama-3.2-1B-Instruct-GGUF` | HuggingFace repo ID |
-| `--model-file <FILE>` | `Llama-3.2-1B-Instruct-Q4_K_M.gguf` | GGUF filename within the repo |
-| `--local-model <PATH>` | — | Use a local `.gguf` file (skips download) |
+| `--model-file <FILE>` | `Llama-3.2-1B-Instruct-Q4_K_M.gguf` | GGUF file in the repo |
+| `--local-model <PATH>` | none | Use local GGUF path |
 
-Any GGUF model works. Smaller = faster startup; larger = better compression quality:
+### Compression strategy
 
-| Model | Size | Speed | Quality |
-|-------|------|-------|---------|
-| `Llama-3.2-1B-Instruct-Q4_K_M` | 700 MB | ~1.5s | Good |
-| `Llama-3.2-3B-Instruct-Q4_K_M` | 1.8 GB | ~3s | Better |
-| `Qwen2.5-1.5B-Instruct-Q4_K_M` | 900 MB | ~2s | Good |
-
-### Compression strategy (pick one)
+Use one strategy at a time.
 
 | Flag | Default | Description |
-|------|---------|-------------|
-| `-t, --threshold <LOGPROB>` | `-1.0` | Keep tokens where logprob < threshold |
-| `-k, --keep-ratio <RATIO>` | — | Keep the N most surprising tokens (0 < ratio ≤ 1) |
+|---|---|---|
+| `-t, --threshold <LOGPROB>` | `-1.0` | Keep tokens where `logprob < threshold` |
+| `-k, --keep-ratio <RATIO>` | none | Keep top most-surprising fraction (`0 < ratio <= 1`) |
 
-**Threshold guide** — lower = more aggressive:
-
-| Threshold | Approx. probability cutoff | Typical reduction |
-|-----------|---------------------------|-------------------|
-| `-0.5` | p < 61% | 20–40% |
-| `-1.0` *(default)* | p < 37% | 30–55% |
-| `-1.5` | p < 22% | 45–65% |
-| `-2.0` | p < 14% | 55–75% |
-
-**Keep-ratio guide:**
-
-| Ratio | Tokens kept | Good for |
-|-------|-------------|----------|
-| `0.7` | 70% | Light compression, preserve most detail |
-| `0.5` | 50% | Balanced — recommended for most uses |
-| `0.3` | 30% | Aggressive — repetitive text, logs |
-
-### Output
+### Output and diagnostics
 
 | Flag | Description |
-|------|-------------|
-| `-o, --output-format <FMT>` | `text` (default), `token-ids`, or `json` |
-| `-d, --debug` | Full per-token JSON with logprobs and keep/drop decisions |
-| `-s, --stats` | Print `n_kept/n_original` stats to stderr |
+|---|---|
+| `-o, --output-format <FMT>` | `text`, `token-ids`, or `json` |
+| `-d, --debug` | Full per-token JSON |
+| `-s, --stats` | Print compression stats to stderr |
 
----
+### Hook mode
+
+| Flag | Default | Description |
+|---|---|---|
+| `--hook-mode` | `false` | Claude Code UserPromptSubmit hook mode |
+| `--hook-threshold <N>` | `500` | Min estimated tokens before compression |
+
+## How it works
+
+For each token, `imptokens` asks: "How predictable was this token given the prior context?"
+
+- low logprob (example: `-8.5`) -> surprising -> informative -> keep
+- high logprob (example: `-0.1`) -> predictable -> lower information density -> drop
+
+Example:
+
+```text
+Input:   The model predicts the next token. The model predicts the next word.
+logprob: BOS  -9.4   -5.1  -1.4 -6.2 -7.7  -1.5 -1.9   -1.8  -0.2 -0.3 -2.1
+kept?:    Y     Y      Y     Y    Y    Y      Y    Y      Y     N    N    Y
+Output:  The model predicts the next token. The model predicts word.
+```
+
+The second sentence is mostly predictable repetition, so only the novel ending is retained.
 
 ## Quality benchmark
 
-Real results on representative text types (measured with `examples/03_quality_benchmark.py`):
+Measured with `examples/03_quality_benchmark.py`.
 
-| Text type | Target | Actual reduction | Key-phrase survival |
-|-----------|--------|-----------------|---------------------|
-| Dense technical prose | 30% | 30.8% | 20% |
+| Text type | Target reduction | Actual reduction | Key-phrase survival |
+|---|---:|---:|---:|
 | Dense technical prose | 50% | 50.8% | 20% |
-| Dense technical prose | 70% | 70.8% | 60% |
-| Repetitive documentation | 30% | 31.2% | 60% |
 | Repetitive documentation | 50% | 51.2% | 60% |
-| Repetitive documentation | 70% | 70.0% | 60% |
-| Git diff output | 30% | 30.9% | 75% |
-| Git diff output | 50% | 50.5% | **100%** |
-| Git diff output | 70% | 70.1% | **100%** |
-| Error log / stack trace | 30% | 30.7% | 0% |
+| Git diff output | 50% | 50.5% | 100% |
 | Error log / stack trace | 50% | 51.1% | 60% |
-| Error log / stack trace | 70% | 70.5% | 60% |
 
-**Key insight:** Git diffs at 50% ratio preserve 100% of key symbols (`forward`, `embed`, `head`, etc.) while halving token count — the model recognises that diff markers and changed lines are informative, boilerplate lines are not.
+Practical defaults:
 
-**Rule of thumb:** use `--keep-ratio 0.5` for code/diffs, `--keep-ratio 0.7` for dense prose.
+- `--keep-ratio 0.5` for diffs/code/logs
+- `--keep-ratio 0.7` for dense prose where recall matters more
 
-Run the benchmark yourself:
+Run locally:
 
 ```bash
 python3 examples/03_quality_benchmark.py
-```
-
-Visualise which tokens are kept/dropped:
-
-```bash
 python3 examples/02_token_viz.py --ratio 0.5
 ```
-
----
 
 ## Claude Code integration
 
 - Claude Code hooks docs: https://docs.anthropic.com/en/docs/claude-code/hooks
 - RTL/RTK platform (complementary): https://www.rtk-ai.app/
 
-### compress-paste — pre-compress clipboard before sending
+### Clipboard pre-compression
 
 ```bash
-# 1. Copy text (Cmd+C)
-compress-paste          # keep 50% (default)
-compress-paste 0.3      # keep 30% (more aggressive)
-# 2. Paste into Claude (Cmd+V) — compressed text is in clipboard
+# 1) Copy text
+compress-paste        # default keep-ratio 0.5
+compress-paste 0.3    # more aggressive
+# 2) Paste compressed text into Claude
 ```
 
 ### Automatic bash output compression
 
-When installed, the `install.sh` adds a step to the RTK pre-tool-use hook so that large bash command outputs are semantically compressed before entering Claude's context:
+When enabled by `install.sh`, selected RTK commands are piped through `compress-if-large`:
 
-```
-cat bigfile.py    →  rtk read bigfile.py | compress-if-large
-git diff HEAD~5   →  rtk git diff HEAD~5 | compress-if-large
-git log --stat    →  rtk git log --stat  | compress-if-large
+```text
+cat bigfile.py    -> rtk read bigfile.py | compress-if-large
+git diff HEAD~5   -> rtk git diff HEAD~5 | compress-if-large
+git log --stat    -> rtk git log --stat  | compress-if-large
 ```
 
-`compress-if-large` is a no-op for outputs under ~1000 tokens (4000 chars). Tune via environment variables:
+Tune behavior in your shell config:
 
 ```bash
-# in ~/.zshrc
-export COMPRESS_MIN_CHARS=2000   # compress outputs > ~500 tokens
-export COMPRESS_RATIO=0.5        # keep 50% instead of 60%
+export COMPRESS_MIN_CHARS=2000
+export COMPRESS_RATIO=0.5
 ```
 
-### Slash command inside Claude Code
+### Slash command
 
-Type `/compress-paste` in Claude Code to compress your current clipboard via Claude's Bash tool.
+`install.sh` can register `/compress-paste` under `~/.claude/commands/compress-paste.md`.
 
 ### Hook mode (advanced)
-
-The binary includes a `--hook-mode` for direct integration with Claude Code's hook JSON protocol:
 
 ```bash
 echo '{"prompt":"...long text..."}' | imptokens --hook-mode --hook-threshold 500
 ```
 
----
+Hook mode returns hook JSON with compressed prompt text when the estimated input token count exceeds threshold.
+
+## Model guide
+
+Any GGUF model can be used.
+
+| Model | Size | Speed | Quality |
+|---|---|---|---|
+| `Llama-3.2-1B-Instruct-Q4_K_M` | ~700 MB | Fast | Good default |
+| `Llama-3.2-3B-Instruct-Q4_K_M` | ~1.8 GB | Medium | Better semantic retention |
+| `Qwen2.5-1.5B-Instruct-Q4_K_M` | ~900 MB | Medium-fast | Good |
+
+Use explicit model selection:
+
+```bash
+imptokens --model bartowski/Llama-3.2-3B-Instruct-GGUF --model-file Llama-3.2-3B-Instruct-Q4_K_M.gguf "text"
+```
+
+Or local model file:
+
+```bash
+imptokens --local-model /path/to/model.gguf "text"
+```
 
 ## Examples
 
-See the `examples/` directory:
-
 | File | Description |
-|------|-------------|
-| `examples/01_basic.sh` | Side-by-side comparison of threshold vs keep-ratio |
-| `examples/02_token_viz.py` | Coloured token-by-token visualization with logprobs |
-| `examples/03_quality_benchmark.py` | Measures key-phrase survival across text types and ratios |
-
----
-
-## Roadmap
-
-### Near-term
-
-- [ ] **Streaming mode** — compress chunks as they arrive, no buffering (`--stream`)
-- [ ] **Auto-chunking** — transparently split inputs larger than the model's context window
-- [ ] **CoreML backend** — Apple Neural Engine via CoreML for even faster inference on M-series chips
-- [ ] **Interactive mode** — show tokens before committing, let user adjust threshold interactively
-- [ ] **JSON/JSONL input** — compress only the `content` fields of JSON objects, leave structure intact
-- [ ] **`--min-tokens` guard** — skip compression entirely when input is below a token count
-
-### Integrations
-
-- [ ] **Cursor** — MCP server that hooks into Cursor's context pipeline and compresses file reads before they reach the model
-- [ ] **VS Code extension** — right-click → "Copy compressed" in the editor
-- [ ] **GitHub Actions** — compress PR diffs before sending to AI code review (`imptokens --file diff.patch | ai-review`)
-- [ ] **Neovim plugin** — compress visual selection, replace in-buffer
-- [ ] **HTTP server mode** — `imptokens serve --port 8080` for use as a sidecar in any pipeline
-- [ ] **antigravity** — integration with [antigravity](https://github.com/antigravityai) agentic pipelines
-
-### Quality & models
-
-- [ ] **HuggingFace Transformers backend** — use any safetensors model without converting to GGUF
-- [ ] **Sentence-level granularity** — score and drop at sentence level for better coherence
-- [ ] **Perplexity output** — `--output-format perplexity` for use as a standalone text quality metric
-- [ ] **Fine-tuned compression models** — train a model specifically to predict which tokens are important for downstream LLM comprehension
-- [ ] **Context-aware compression** — preserve tokens that are relevant to a specific query (`--query "what is the return value?"`)
-
----
+|---|---|
+| `examples/01_basic.sh` | Basic threshold vs keep-ratio comparison |
+| `examples/02_token_viz.py` | Token-level color visualization |
+| `examples/03_quality_benchmark.py` | Compression quality benchmark |
+| `examples/04_demo.py` | Demo report generation |
+| `examples/05_qa_demo.py` | QA preservation demo |
 
 ## Architecture
 
-```
+```text
 imptokens/
 ├── src/
-│   ├── main.rs          # CLI (clap) + hook mode
+│   ├── main.rs          # CLI + hook mode
 │   ├── lib.rs           # public API
-│   ├── compressor.rs    # Compressor struct, Strategy enum
-│   ├── result.rs        # CompressResult (token ids, bytes, logprobs, mask)
+│   ├── compressor.rs    # Compressor + Strategy
+│   ├── result.rs        # CompressResult and stats
 │   ├── threshold.rs     # fixed_threshold / target_ratio / target_count
 │   └── backend/
-│       ├── mod.rs       # Backend trait (score, decode, token_to_bytes)
-│       └── llama.rs     # LlamaCppBackend (Metal GPU via llama-cpp-2 crate)
+│       ├── mod.rs       # Backend trait
+│       └── llama.rs     # llama.cpp + Metal backend
 └── examples/
-    ├── 01_basic.sh
-    ├── 02_token_viz.py
-    └── 03_quality_benchmark.py
 ```
 
-The `Backend` trait makes it straightforward to add new inference backends:
+`Backend` is intentionally abstracted so additional inference backends can be added without changing CLI UX.
 
-```rust
-pub trait Backend: Send + Sync {
-    fn load(&mut self, model_path: &Path) -> anyhow::Result<()>;
-    fn score(&self, text: &str) -> anyhow::Result<ScoredTokens>;
-    fn token_to_bytes(&self, token_id: u32) -> anyhow::Result<Vec<u8>>;
-}
-```
+## Roadmap
 
----
+- Streaming mode (`--stream`) for chunked large inputs
+- Auto-chunking beyond model context limits
+- CoreML backend exploration for Apple Neural Engine
+- JSON/JSONL selective field compression
+- Integrations: Cursor, VS Code, Neovim, GitHub Actions
 
 ## License
 
