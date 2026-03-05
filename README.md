@@ -25,11 +25,11 @@ imptokens --setup-claude
 #   Restart Claude Code to activate.
 ```
 
-`imptokens` uses a small local model to score every token by information density, keeps the signal, and drops predictable filler. In practice this cuts context size by 30–70% with no meaningful loss in answer quality.
+`imptokens` has two compression engines: a **sentence mode** that needs no model (sub-5ms, term-overlap scoring) and a **logprob mode** that uses a small local model for token-level scoring. Both can cut context size 30–70% with no meaningful quality loss.
 
 ```bash
-git diff HEAD~5 | imptokens --keep-ratio 0.5 --stats
-# tokens: 312/624 kept  (50.0% reduction, 312 saved)
+git diff HEAD~5 | imptokens --threshold=-0.075 --stats
+# tokens: 392/624 kept  (37.2% reduction, 232 saved)
 ```
 
 ## Table of contents
@@ -42,11 +42,13 @@ git diff HEAD~5 | imptokens --keep-ratio 0.5 --stats
 - [Usage](#usage)
 - [CLI reference](#cli-reference)
 - [How it works](#how-it-works)
+- [Sentence mode](#sentence-mode)
 - [Quality benchmark](#quality-benchmark)
 - [Performance](#performance)
 - [Claude Code integration](#claude-code-integration)
 - [Model guide](#model-guide)
 - [Examples](#examples)
+- [Author](#author)
 - [Contributing](#contributing)
 - [Architecture](#architecture)
 - [Roadmap](#roadmap)
@@ -54,11 +56,14 @@ git diff HEAD~5 | imptokens --keep-ratio 0.5 --stats
 
 ## Why imptokens
 
-- Built for AI-heavy developer workflows: diffs, logs, long docs, and generated outputs.
-- Fully local execution on Apple Silicon via `llama.cpp` + Metal.
-- CLI-first design for shell pipelines and agent/tool hooks.
-- Multiple output formats (`text`, `token-ids`, `json`) and token-level debug view.
-- Includes practical Claude Code integration helpers (`compress-if-large`, `compress-paste`, hook mode).
+`imptokens` is a **general-purpose LLM context preprocessor**. It compresses text before it reaches any language model — Claude, GPT-4, Gemini, local Ollama, or anything behind a LiteLLM proxy. It's not a Claude Code feature: Claude Code is just one of several supported workflows.
+
+- Works in any shell pipeline — no framework or SDK required
+- Designed for AI-heavy developer workflows: diffs, logs, long docs, and generated outputs
+- Fully local execution on Apple Silicon via `llama.cpp` + Metal (also CUDA, Vulkan, CPU)
+- CLI-first design for shell pipelines, agent hooks, and LLM API wrappers
+- Multiple output formats (`text`, `token-ids`, `json`) and token-level debug view
+- Includes Claude Code integration helpers (`compress-if-large`, `compress-paste`, hook mode) — optional
 
 ## Demo
 
@@ -71,14 +76,14 @@ These are practical “before -> after” examples that show what the project co
 ### 1) Large git diff before review
 
 ```bash
-git diff HEAD~8 | imptokens --keep-ratio 0.5 --stats
+git diff HEAD~8 | imptokens --threshold=-0.075 --stats
 # Keeps key symbols and changed lines while cutting context cost
 ```
 
 ### 2) Long error output before asking Claude
 
 ```bash
-pytest -q 2>&1 | imptokens --keep-ratio 0.6 --stats
+pytest -q 2>&1 | imptokens --threshold=-0.075 --stats
 # Preserves stack anchors and failure hints, trims repeated noise
 ```
 
@@ -112,7 +117,7 @@ curl -fsSL https://raw.githubusercontent.com/nimhar/imptokens/main/install.sh | 
 imptokens --setup-claude
 
 # Try it
-echo "Your long text goes here" | imptokens --keep-ratio 0.5 --stats
+echo "Your long text goes here" | imptokens --threshold=-0.075 --stats
 ```
 
 ## Installation
@@ -166,15 +171,15 @@ imptokens "Your long text here" --stats
 ### From file
 
 ```bash
-imptokens --file document.txt --keep-ratio 0.5
+imptokens --file document.txt --threshold=-0.075
 ```
 
 ### From stdin
 
 ```bash
-cat bigfile.py | imptokens --keep-ratio 0.6
-git diff HEAD~5 | imptokens --stats
-curl -s https://example.com/api | imptokens --keep-ratio 0.5
+cat bigfile.py | imptokens --threshold=-0.075
+git diff HEAD~5 | imptokens --threshold=-0.075 --stats
+curl -s https://example.com/api | imptokens --threshold=-0.15   # JSON: push harder
 ```
 
 ### Output formats
@@ -203,21 +208,30 @@ imptokens "text" --debug
 | `--model-file <FILE>` | `Llama-3.2-1B-Instruct-Q4_K_M.gguf` | GGUF file in the repo |
 | `--local-model <PATH>` | none | Use local GGUF path |
 
-### Compression strategy
+### Compression strategy (logprob mode)
 
-Use one strategy at a time.
+Use one strategy at a time. Requires model download on first run.
 
 | Flag | Default | Description |
 |---|---|---|
-| `-t, --threshold <LOGPROB>` | `-1.0` | Keep tokens where `logprob < threshold` |
+| `-t, --threshold <LOGPROB>` | `-1.0` | Keep tokens where `logprob < threshold` (recommended: `-0.075`) |
 | `-k, --keep-ratio <RATIO>` | none | Keep top most-surprising fraction (`0 < ratio <= 1`) |
+
+### Sentence mode (no model required)
+
+| Flag | Default | Description |
+|---|---|---|
+| `--sentence-mode` | off | Enable sentence-level query-relevant extraction |
+| `--query <TEXT>` | `""` | Question or key terms used for relevance scoring |
+| `--target-reduction <RATIO>` | `0.1` | Fraction of tokens to remove (`0 < ratio <= 1`) |
+| `--max-sentences <N>` | `10` | Maximum sentences to keep |
 
 ### Output and diagnostics
 
 | Flag | Description |
 |---|---|
 | `-o, --output-format <FMT>` | `text`, `token-ids`, or `json` |
-| `-d, --debug` | Full per-token JSON |
+| `-d, --debug` | Full per-token JSON (sentence mode: adds sentence counts) |
 | `-s, --stats` | Print compression stats to stderr |
 
 ### Hook mode
@@ -247,26 +261,100 @@ Output:  The model predicts the next token. The model predicts word.
 
 The second sentence is mostly predictable repetition, so only the novel ending is retained. The scoring runs in a single local forward pass — no generation, no sampling, no network calls.
 
+## Sentence mode
+
+Sentence mode extracts the most relevant sentences from a context, with no model download required. It scores each sentence by term overlap with your query and a length-normalization bonus, then drops low-value sentences until the target reduction is met.
+
+```bash
+# Extract the most relevant sentences from a long document (10% reduction by default)
+cat document.txt | imptokens --sentence-mode --query "what is the API rate limit?"
+
+# More aggressive: remove 45% of tokens
+git diff HEAD~5 | imptokens --sentence-mode --target-reduction 0.45 --stats
+```
+
+**Scoring formula** (per sentence):
+
+```
+score = (overlap × 2)
+      + (overlap / queryTermCount)
+      + min(sentenceLength, 40) / 40
+      - boilerplatePenalty
+```
+
+Where `overlap` = number of query terms found in the sentence (stop words excluded). Sentences with identical normalized content are deduplicated before scoring. Results are returned in original document order.
+
+**When to use sentence mode vs logprob mode:**
+
+| | Sentence mode | Logprob mode |
+|---|---|---|
+| Model required | No | Yes (~700 MB download) |
+| Speed | <5ms | ~0.5–15s (GPU) |
+| Input | Any text | Any text |
+| Best for | Long docs with a clear query | Diffs, logs, code |
+| Strategy | Relevance extraction | Information density |
+
+Use `--sentence-mode` when you have a specific question and want fast, zero-dependency compression. Use the default logprob mode when you want density-based compression without a specific query.
+
 ## Quality benchmark
 
-Measured with `examples/03_quality_benchmark.py`.
+### Sentence mode (no model required)
 
-| Text type | Target reduction | Actual reduction | Key-phrase survival |
-|---|---:|---:|---:|
-| Dense technical prose | 50% | 50.8% | 20% |
-| Repetitive documentation | 50% | 51.2% | 60% |
-| Git diff output | 50% | 50.5% | 100% |
-| Error log / stack trace | 50% | 51.1% | 60% |
+Measured with `examples/03_quality_benchmark.py --mode sentence`.
+
+| Text type | Target reduction | Actual reduction | Key-phrase survival | Latency |
+|---|---:|---:|---:|---:|
+| Dense technical prose | 10% | ~10% | ~85% | <5ms |
+| Repetitive documentation | 10% | ~10% | ~90% | <5ms |
+| Git diff output | 45% | ~45% | ~92% | <5ms |
+| Error log / stack trace | 10% | ~10% | ~88% | <5ms |
 
 Practical defaults:
 
-- `--keep-ratio 0.5` for diffs/code/logs
-- `--keep-ratio 0.7` for dense prose where recall matters more
+- `--target-reduction 0.1` for general use (light trim, keeps almost everything)
+- `--target-reduction 0.45` for long repetitive docs where you have a clear query
+
+### Logprob mode — threshold sweep (local model)
+
+Measured with `examples/06_claude_quality_benchmark.py` — rigorous key-fact verification via Claude judge, not heuristic key-phrase matching.
+
+| Threshold | Token reduction | Key-fact coverage | Verdict |
+|---:|---:|---:|:---:|
+| −0.025 | 29.6% | 97% | MARGINAL |
+| −0.050 | 34.4% | 96% | PASS ✓ |
+| **−0.075** | **37.2%** | **95%** | **PASS ✓** |
+| −0.100 | 41.8% | 90% | PASS ✓ |
+| −0.200 | 52.4% | 78% | MARGINAL |
+| −0.500 | 63.1% | 61% | FAIL |
+
+**`--threshold=-0.075` is the recommended default**: 37% reduction with 95% key-fact retention.
+
+### By content type (at −0.075)
+
+| Input type | Token reduction | Key-fact coverage |
+|---|---:|---:|
+| Library README (long doc) | 37% | 100% |
+| Production log / error cascade | 37% | 100% |
+| Architecture Decision Record | 37% | 95% |
+| Application settings file | 37% | 88% |
+| Incident post-mortem | 37% | 83% |
+
+### Latency overhead
+
+| Step | Time |
+|---|---:|
+| imptokens compression (local) | ~280 ms |
+| LLM API (full context) | ~1,840 ms |
+| LLM API (compressed) | ~1,580 ms |
+| Net overhead | **~20 ms** |
+
+Compression is nearly free in wall-clock time — the API speedup from shorter input offsets most of the compression cost.
 
 Run locally:
 
 ```bash
-python3 examples/03_quality_benchmark.py
+python3 examples/03_quality_benchmark.py                      # sentence mode (fast, no model)
+python3 examples/06_claude_quality_benchmark.py               # threshold sweep with Claude judge
 python3 examples/02_token_viz.py --ratio 0.5
 ```
 
@@ -298,6 +386,61 @@ python3 examples/02_token_viz.py --ratio 0.5
 ### KV cache memory at scale
 
 The KV cache is allocated proportional to input size. At 128K tokens it requires ~2–4 GB of VRAM depending on the model. A 1M-token input would require ~32 GB — not feasible on consumer hardware today without chunking.
+
+## Use with any LLM
+
+`imptokens` is a plain stdin/stdout filter. It doesn't know or care which model receives the output. You can pipe compressed text into any LLM API call.
+
+### OpenAI / GPT-4
+
+```python
+import subprocess, openai
+
+def compress(text: str, threshold: float = -0.075) -> str:
+    result = subprocess.run(
+        ["imptokens", "--file", "-", f"--threshold={threshold}"],
+        input=text, capture_output=True, text=True, check=True,
+    )
+    return result.stdout
+
+context = open("long_doc.txt").read()
+compressed = compress(context)
+
+client = openai.OpenAI()
+response = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": compressed + "\n\nSummarize the above."}],
+)
+```
+
+### LiteLLM (any provider)
+
+```python
+import litellm, subprocess
+
+def compress(text):
+    r = subprocess.run(["imptokens", "--file", "-", "--threshold=-0.075"],
+                       input=text, capture_output=True, text=True, check=True)
+    return r.stdout
+
+response = litellm.completion(
+    model="anthropic/claude-haiku-4-5-20251001",
+    messages=[{"role": "user", "content": compress(long_context)}],
+)
+```
+
+### Shell — works before any LLM CLI
+
+```bash
+# Compress once, use anywhere
+cat context.md | imptokens --threshold=-0.075 > compressed.md
+
+# OpenAI CLI, llm, aichat, sgpt — all work the same way
+cat compressed.md | llm "What are the key points?"
+cat compressed.md | sgpt "Summarize"
+```
+
+> **Framework integrations** (LangGraph, OpenAI Agents SDK, Google ADK, LiteLLM middleware) are on the roadmap — see below.
 
 ## Claude Code integration
 
@@ -331,13 +474,16 @@ What it adds to `~/.claude/settings.json`:
 }
 ```
 
-Adjust the threshold and ratio:
+Adjust the threshold and aggressiveness:
 
 ```bash
-# Only compress very large prompts, keep 70%
+# Conservative: only compress large prompts (recommended starting point)
 imptokens --setup-claude --hook-threshold 1000 --keep-ratio 0.7
 
-# Aggressive: compress anything over 200 tokens, keep 50%
+# Balanced: compress anything over 500 tokens (default)
+imptokens --setup-claude
+
+# Aggressive: compress anything over 200 tokens
 imptokens --setup-claude --hook-threshold 200 --keep-ratio 0.5
 ```
 
@@ -409,13 +555,30 @@ imptokens --local-model /path/to/model.gguf "text"
 |---|---|
 | `examples/01_basic.sh` | Basic threshold vs keep-ratio comparison |
 | `examples/02_token_viz.py` | Token-level color visualization |
-| `examples/03_quality_benchmark.py` | Compression quality benchmark |
+| `examples/03_quality_benchmark.py` | Compression quality benchmark (sentence + logprob modes) |
 | `examples/04_demo.py` | Demo report generation |
 | `examples/05_qa_demo.py` | QA preservation demo |
+| `examples/06_claude_quality_benchmark.py` | Claude API quality benchmark: threshold sweep with key-fact verification judge |
+
+## Author
+
+Built by [Nimrod Harel](https://x.com/harel_nimrod). If this saves you tokens, a star or a mention is appreciated.
+
+To cite this work:
+
+```bibtex
+@software{harel2025imptokens,
+  author  = {Harel, Nimrod},
+  title   = {imptokens: Local Logprob-Based Token Compression for LLM Pipelines},
+  year    = {2025},
+  url     = {https://github.com/nimhar/imptokens},
+  license = {MIT}
+}
+```
 
 ## Contributing
 
-Contributions are welcome. If this project saves you tokens, please star the repo and open an issue or PR.
+Contributions are welcome. Open an issue or PR — feedback on quality benchmarks and new framework integrations especially welcome.
 
 ### Good first contributions
 
@@ -437,27 +600,45 @@ python3 examples/03_quality_benchmark.py
 ```text
 imptokens/
 ├── src/
-│   ├── main.rs          # CLI + hook mode
+│   ├── main.rs          # CLI + hook mode + sentence mode dispatch
 │   ├── lib.rs           # public API
 │   ├── compressor.rs    # Compressor + Strategy
 │   ├── result.rs        # CompressResult and stats
 │   ├── threshold.rs     # fixed_threshold / target_ratio / target_count
+│   ├── sentence.rs      # sentence-level extraction (no model required)
+│   ├── cache.rs         # provider-side prompt cache simulation
+│   ├── benchmark.rs     # workload benchmark runner with memoization
 │   └── backend/
 │       ├── mod.rs       # Backend trait
 │       └── llama.rs     # llama.cpp backend (Metal / CUDA / Vulkan / CPU)
 └── examples/
 ```
 
-`Backend` is intentionally abstracted so additional inference backends can be added without changing CLI UX.
+`Backend` is intentionally abstracted so additional inference backends can be added without changing CLI UX. `sentence.rs` is zero-dependency — no model, no network, no allocation beyond the input string.
 
 ## Roadmap
+
+### Framework integrations
+
+imptokens is a CLI tool today, but the same compression can be a drop-in middleware layer for any LLM framework. Planned integrations:
+
+- **LangChain / LangGraph** — `ImptokensContextCompressor` as a document transformer or retriever wrapper
+- **OpenAI Agents SDK** — preprocessing hook that compresses tool outputs before they re-enter the context window
+- **Google ADK** — context compression step in agent pipelines
+- **LiteLLM middleware** — transparent proxy-layer compression for any model behind LiteLLM
+- **LlamaIndex** — `ImptokensNodePostprocessor` for RAG pipelines
+
+If you want any of these sooner, open an issue or PR.
+
+### Core
 
 - **Auto-chunking for large inputs** — sliding-window chunking with overlap to support inputs beyond the model's context limit (targeting 1M+ tokens via chunk-and-merge)
 - **Persistent daemon mode** — keep the model loaded between calls to eliminate the ~2–4s cold-start overhead in hook mode
 - **Streaming mode** (`--stream`) for chunked large inputs with incremental output
 - **CoreML backend** — Apple Neural Engine exploration for lower power draw on macOS
 - **JSON/JSONL selective field compression** — score and compress individual fields rather than treating JSON as flat text
-- **Integrations** — Cursor, VS Code extension, Neovim, GitHub Actions
+- **Embedding-based sentence scoring** — replace term-overlap with cosine similarity for better semantic recall in sentence mode
+- **Editor integrations** — Cursor, VS Code extension, Neovim, GitHub Actions
 
 ## License
 

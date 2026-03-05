@@ -69,6 +69,26 @@ struct Cli {
     #[arg(long, default_value_t = 500)]
     hook_threshold: usize,
 
+    // ── Sentence mode ─────────────────────────────────────────────────────────
+    /// Use sentence-level query-relevant compression instead of logprob scoring.
+    /// No model required. Sentences are scored by term overlap with --query.
+    #[arg(long)]
+    sentence_mode: bool,
+
+    /// Query for sentence mode: sentences with highest term overlap are kept.
+    /// Pass the user's question or key terms.
+    #[arg(long, value_name = "TEXT")]
+    query: Option<String>,
+
+    /// Fraction of tokens to remove in sentence mode (0 < ratio ≤ 1).
+    /// 0.05 = very light, 0.1 = light (default), 0.45 = moderate.
+    #[arg(long, default_value_t = 0.1)]
+    target_reduction: f32,
+
+    /// Maximum sentences to keep in sentence mode.
+    #[arg(long, default_value_t = 10)]
+    max_sentences: usize,
+
     // ── Claude Code setup ─────────────────────────────────────────────────────
     /// Wire imptokens into Claude Code as a UserPromptSubmit hook.
     /// Writes the hook entry to ~/.claude/settings.json and prints instructions.
@@ -94,6 +114,10 @@ fn main() -> anyhow::Result<()> {
 
     if cli.hook_mode {
         return run_hook(&cli);
+    }
+
+    if cli.sentence_mode {
+        return run_sentence_mode(&cli);
     }
 
     // Validate strategy flags
@@ -214,6 +238,76 @@ fn run_hook(cli: &Cli) -> anyhow::Result<()> {
         }
     });
     println!("{}", serde_json::to_string(&output)?);
+    Ok(())
+}
+
+// ─── Sentence mode ───────────────────────────────────────────────────────────
+
+fn run_sentence_mode(cli: &Cli) -> anyhow::Result<()> {
+    use imptokens::sentence::{compress_context, CompressContextOptions};
+
+    let text = read_input(cli)?;
+    if text.trim().is_empty() {
+        bail!("input text is empty");
+    }
+
+    if !(0.0 < cli.target_reduction && cli.target_reduction <= 1.0) {
+        bail!("--target-reduction must be in (0, 1]");
+    }
+
+    let query = cli.query.as_deref().unwrap_or("");
+    let opts = CompressContextOptions {
+        target_reduction: cli.target_reduction,
+        max_sentences: cli.max_sentences,
+        ..Default::default()
+    };
+
+    let result = compress_context(&text, query, opts);
+    let compression_ratio = if result.estimated_original_tokens > 0 {
+        result.estimated_kept_tokens as f64 / result.estimated_original_tokens as f64
+    } else {
+        0.0
+    };
+
+    if cli.stats {
+        eprintln!(
+            "sentences: {}/{} kept  tokens: {}/{} ({:.1}% reduction)",
+            result.n_kept_sentences,
+            result.n_original_sentences,
+            result.estimated_kept_tokens,
+            result.estimated_original_tokens,
+            (1.0 - compression_ratio) * 100.0,
+        );
+    }
+
+    if cli.debug {
+        let j = serde_json::json!({
+            "original_text": text,
+            "compressed_text": result.compressed,
+            "n_original": result.estimated_original_tokens,
+            "n_kept": result.estimated_kept_tokens,
+            "compression_ratio": compression_ratio,
+            "n_original_sentences": result.n_original_sentences,
+            "n_kept_sentences": result.n_kept_sentences,
+        });
+        println!("{}", serde_json::to_string_pretty(&j)?);
+    } else {
+        match cli.output_format {
+            OutputFormat::Text => println!("{}", result.compressed),
+            OutputFormat::TokenIds => bail!("--output-format token-ids is not supported in --sentence-mode"),
+            OutputFormat::Json => {
+                let j = serde_json::json!({
+                    "original_text": text,
+                    "compressed_text": result.compressed,
+                    "n_original": result.estimated_original_tokens,
+                    "n_kept": result.estimated_kept_tokens,
+                    "compression_ratio": compression_ratio,
+                });
+                println!("{}", serde_json::to_string_pretty(&j)?);
+            }
+        }
+    }
+
     Ok(())
 }
 
