@@ -4,6 +4,7 @@ pub mod cache;
 pub mod compressor;
 pub mod result;
 pub mod sentence;
+pub mod stats;
 pub mod threshold;
 
 pub use compressor::{Compressor, Strategy};

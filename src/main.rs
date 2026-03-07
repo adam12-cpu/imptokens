@@ -10,6 +10,7 @@ const MAX_INPUT_BYTES: u64 = 100 * 1024 * 1024;
 use imptokens::{
     Compressor, Strategy,
     backend::LlamaCppBackend,
+    stats,
 };
 
 // ─── CLI definition ──────────────────────────────────────────────────────────
@@ -94,6 +95,16 @@ struct Cli {
     /// Writes the hook entry to ~/.claude/settings.json and prints instructions.
     #[arg(long)]
     setup_claude: bool,
+
+    // ── Savings counter ───────────────────────────────────────────────────────
+    /// Show cumulative token savings across all runs.
+    #[arg(long)]
+    gain: bool,
+
+    // ── Installation check ────────────────────────────────────────────────────
+    /// Verify the installation: binary, model download, and a smoke-test compression.
+    #[arg(long)]
+    check: bool,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -107,6 +118,14 @@ enum OutputFormat {
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+
+    if cli.gain {
+        return run_gain();
+    }
+
+    if cli.check {
+        return run_check(&cli);
+    }
 
     if cli.setup_claude {
         return run_setup_claude(&cli);
@@ -151,6 +170,8 @@ fn main() -> anyhow::Result<()> {
         );
         let _ = stats; // already printed above
     }
+
+    stats::record(result.n_original() as u64, result.n_kept() as u64);
 
     // Output
     if cli.debug {
@@ -232,6 +253,8 @@ fn run_hook(cli: &Cli) -> anyhow::Result<()> {
         compressed,
     );
 
+    stats::record(result.n_original() as u64, result.n_kept() as u64);
+
     let output = serde_json::json!({
         "hookSpecificOutput": {
             "hookOutputText": hook_text,
@@ -280,6 +303,11 @@ fn run_sentence_mode(cli: &Cli) -> anyhow::Result<()> {
         );
     }
 
+    stats::record(
+        result.estimated_original_tokens as u64,
+        result.estimated_kept_tokens as u64,
+    );
+
     if cli.debug {
         let j = serde_json::json!({
             "original_text": text,
@@ -308,6 +336,71 @@ fn run_sentence_mode(cli: &Cli) -> anyhow::Result<()> {
         }
     }
 
+    Ok(())
+}
+
+// ─── Savings counter ─────────────────────────────────────────────────────────
+
+fn run_gain() -> anyhow::Result<()> {
+    let s = stats::load();
+    if s.total_runs == 0 {
+        println!("No compressions recorded yet. Run imptokens on some input first.");
+        return Ok(());
+    }
+    println!("Tokens saved:  {:>12} / {} total input tokens  ({:.1}% average reduction)",
+        format_num(s.total_saved()),
+        format_num(s.total_original_tokens),
+        s.avg_reduction_pct(),
+    );
+    println!("Compression runs: {}", s.total_runs);
+    Ok(())
+}
+
+fn format_num(n: u64) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    for (i, c) in s.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 { out.push(','); }
+        out.push(c);
+    }
+    out.chars().rev().collect()
+}
+
+// ─── Installation check ───────────────────────────────────────────────────────
+
+fn run_check(cli: &Cli) -> anyhow::Result<()> {
+    // 1. Binary is clearly working if we got here — just print version.
+    let version = env!("CARGO_PKG_VERSION");
+    println!("  binary    OK  (imptokens v{version})");
+
+    // 2. Model resolution.
+    let model_path = match resolve_model(cli) {
+        Ok(p) => {
+            println!("  model     OK  ({})", p.display());
+            p
+        }
+        Err(e) => {
+            println!("  model     FAIL  {e}");
+            anyhow::bail!("installation check failed");
+        }
+    };
+
+    // 3. Smoke-test compression.
+    let smoke = "The quick brown fox jumps over the lazy dog. \
+                 The quick brown fox jumps over a fence.";
+    let strategy = Strategy::FixedThreshold(cli.threshold.unwrap_or(-1.0));
+    let backend = LlamaCppBackend::new().context("failed to create backend")?;
+    let mut compressor = Compressor::new(Box::new(backend), strategy);
+    compressor.load(&model_path)?;
+    let result = compressor.compress(smoke)?;
+    println!(
+        "  smoke test  OK  ({}/{} tokens kept, {:.0}% reduction)",
+        result.n_kept(),
+        result.n_original(),
+        (1.0 - result.compression_ratio()) * 100.0,
+    );
+
+    println!("\nInstallation OK.");
     Ok(())
 }
 

@@ -113,11 +113,17 @@ echo '{"prompt":"...very long prompt..."}' | imptokens --hook-mode --hook-thresh
 # Install (auto-detects GPU, no Rust required)
 curl -fsSL https://raw.githubusercontent.com/nimhar/imptokens/main/install.sh | bash
 
+# Verify the installation
+imptokens --check
+
 # Wire into Claude Code — one time, then forget about it
 imptokens --setup-claude
 
 # Try it
 echo "Your long text goes here" | imptokens --threshold=-0.075 --stats
+
+# See cumulative savings after a few prompts
+imptokens --gain
 ```
 
 ## Installation
@@ -246,6 +252,13 @@ Use one strategy at a time. Requires model download on first run.
 | Flag | Description |
 |---|---|
 | `--setup-claude` | Write hook config to `~/.claude/settings.json` |
+
+### Savings counter and verification
+
+| Flag | Description |
+|---|---|
+| `--gain` | Show cumulative tokens saved across all runs |
+| `--check` | Verify binary, model, and run a smoke-test compression |
 
 ## How it works
 
@@ -489,6 +502,32 @@ imptokens --setup-claude --hook-threshold 200 --keep-ratio 0.5
 
 > **Latency note:** the hook adds ~2–4s on Apple Silicon (model cold-start). Only triggers above your threshold.
 
+### Verify it's working
+
+After setup, confirm everything is active before you rely on it:
+
+```bash
+# 1) Check the hook is registered
+grep imptokens ~/.claude/settings.json
+
+# 2) Check the binary and model are functional
+imptokens --check
+#   binary    OK  (imptokens v0.1.0)
+#   model     OK  (~/.cache/huggingface/...)
+#   smoke test  OK  (5/8 tokens kept, 37% reduction)
+
+# 3) After a few Claude Code prompts, confirm the hook is firing
+imptokens --gain
+#   Tokens saved:  1,240 / 3,350 total input tokens  (37.0% average reduction)
+#   Compression runs: 4
+```
+
+When the hook fires, it prepends a note to the compressed prompt:
+```
+[imptokens: prompt compressed 40% (600/1000 tokens kept)]
+...compressed text...
+```
+
 ### Clipboard pre-compression (macOS)
 
 ```bash
@@ -606,6 +645,7 @@ imptokens/
 │   ├── result.rs        # CompressResult and stats
 │   ├── threshold.rs     # fixed_threshold / target_ratio / target_count
 │   ├── sentence.rs      # sentence-level extraction (no model required)
+│   ├── stats.rs         # persistent savings counter (~/.imptokens/stats.json)
 │   ├── cache.rs         # provider-side prompt cache simulation
 │   ├── benchmark.rs     # workload benchmark runner with memoization
 │   └── backend/
